@@ -4,10 +4,28 @@
 #
 # Voraussetzung: Shield > Einstellungen > Geräteeinstellungen > Info > 7x auf "Build" tippen,
 # dann Entwickleroptionen > "Netzwerk-Debugging" einschalten.
-# Aufruf:  ./shield-debloat.sh 192.168.x.x        (IP der Shield)
+# Aufruf:  ./shield-debloat.sh                    (sucht die Shield automatisch im Netz)
+#          ./shield-debloat.sh 192.168.x.x        (IP der Shield)
 #          DRY_RUN=1 ./shield-debloat.sh 192.168.x.x   (nur anzeigen)
 set -u
-IP="${1:?Bitte IP-Adresse der Shield angeben, z.B. ./shield-debloat.sh 192.168.1.50}"
+IP="${1:-}"
+if [ -z "$IP" ]; then
+  echo ">> Suche Shield im lokalen Netz (Port 5555)..."
+  SUBNET="$(ip -4 route 2>/dev/null | awk '/src/ && !/docker|veth/ {print $1; exit}' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')"
+  [ -z "$SUBNET" ] && SUBNET="$(ipconfig getifaddr en0 2>/dev/null | cut -d. -f1-3)"   # macOS
+  [ -z "$SUBNET" ] && { echo "Subnetz nicht erkannt – bitte IP angeben."; exit 1; }
+  for i in $(seq 1 254); do
+    ( timeout 1 bash -c "echo >/dev/tcp/$SUBNET.$i/5555" 2>/dev/null && echo "$SUBNET.$i" ) &
+  done > /tmp/shield-scan.txt; wait
+  for c in $(cat /tmp/shield-scan.txt); do
+    adb connect "$c:5555" >/dev/null 2>&1
+    MODEL="$(adb -s "$c:5555" shell getprop ro.product.model 2>/dev/null | tr -d '\r')"
+    echo "   gefunden: $c  ($MODEL)"
+    case "$MODEL" in *SHIELD*|*Shield*) IP="$c"; break;; esac
+  done
+  [ -z "$IP" ] && { echo "Keine Shield gefunden. Netzwerk-Debugging an? Sonst IP manuell angeben."; exit 1; }
+  echo ">> Shield erkannt: $IP"
+fi
 DRY_RUN="${DRY_RUN:-0}"
 LOG="disabled-$(date +%Y%m%d-%H%M%S).txt"
 
